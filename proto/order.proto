@@ -1,0 +1,20 @@
+syntax = "proto3";
+package ecommerce.order;
+import "common.proto";
+service OrderService {
+  rpc CreateOrder(CreateOrderRequest) returns (Order);
+  rpc ListOrders(ecommerce.common.Empty) returns (OrderList);
+  rpc GetOrder(OrderId) returns (Order);
+  rpc Health(ecommerce.common.Empty) returns (ecommerce.common.HealthResponse);
+}
+message ItemInput { int32 pid = 1; int32 qty = 2; }
+message CreateOrderRequest { repeated ItemInput items = 1; }
+message OrderId { int32 oid = 1; }
+message OrderItem { int32 pid = 1; int32 qty = 2; string unit_price = 3; }
+message ShipmentSummary { int32 shipid = 1; int32 oid = 2; string status = 3; }
+message Order {
+  int32 oid = 1; int32 uid = 2; string discount = 3; repeated OrderItem items = 4;
+  string subtotal = 5; string total_amount = 6; repeated ShipmentSummary shipments = 7;
+  string eventId = 8; int32 score = 9; int32 discount_rate = 10;
+}
+message OrderList { repeated Order items = 1; }

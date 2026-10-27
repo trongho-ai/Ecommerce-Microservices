@@ -1,0 +1,292 @@
+name: ecommerce-microservices
+
+x-app: &app
+  image: ecommerce-microservices:local
+  build: .
+  init: true
+  restart: unless-stopped
+  networks: [backend]
+  healthcheck:
+    test: ["CMD", "node", "scripts/healthcheck.js"]
+    interval: 10s
+    timeout: 8s
+    retries: 12
+    start_period: 30s
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  auth-db:
+    image: postgres:17-bookworm@sha256:858bb5e98eed02eb8cafbcdc007f9a65d1b613972028944a8ec2133ccaf80d27
+    environment:
+      POSTGRES_DB: auth
+      POSTGRES_USER: auth
+      POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:?Run scripts/Initialize.ps1}
+    volumes: [auth-data:/var/lib/postgresql/data]
+    networks: [backend]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth -d auth"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  customer-db:
+    image: postgres:17-bookworm@sha256:858bb5e98eed02eb8cafbcdc007f9a65d1b613972028944a8ec2133ccaf80d27
+    environment:
+      POSTGRES_DB: customer
+      POSTGRES_USER: customer
+      POSTGRES_PASSWORD: ${CUSTOMER_DB_PASSWORD:?Run scripts/Initialize.ps1}
+    volumes: [customer-data:/var/lib/postgresql/data]
+    networks: [backend]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U customer -d customer"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  order-db:
+    image: postgres:17-bookworm@sha256:858bb5e98eed02eb8cafbcdc007f9a65d1b613972028944a8ec2133ccaf80d27
+    environment:
+      POSTGRES_DB: orders
+      POSTGRES_USER: orders
+      POSTGRES_PASSWORD: ${ORDER_DB_PASSWORD:?Run scripts/Initialize.ps1}
+    volumes: [order-data:/var/lib/postgresql/data]
+    networks: [backend]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orders -d orders"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  product-db:
+    image: mongo:8.0@sha256:8e7d23aa641b0ec6c86418866d5d18d74d5abf89061bc5db7bc4b80929021ef6
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: product
+      MONGO_INITDB_ROOT_PASSWORD: ${PRODUCT_DB_PASSWORD:?Run scripts/Initialize.ps1}
+      MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?Run scripts/Initialize.ps1}
+    entrypoint: ["bash", "/init/product-entrypoint.sh"]
+    volumes:
+      - product-data:/data/db
+      - ./infra/mongo/product-entrypoint.sh:/init/product-entrypoint.sh:ro
+    networks: [backend]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --username product --password \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval 'quit(db.adminCommand({ping:1}).ok ? 0 : 1)' >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  product-db-init:
+    image: mongo:8.0@sha256:8e7d23aa641b0ec6c86418866d5d18d74d5abf89061bc5db7bc4b80929021ef6
+    environment:
+      MONGO_PASSWORD: ${PRODUCT_DB_PASSWORD}
+    volumes: [./infra/mongo/init-replica.js:/init/init-replica.js:ro]
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        for attempt in $$(seq 1 40); do
+          mongosh --quiet --host product-db --username product --password "$$MONGO_PASSWORD" --authenticationDatabase admin /init/init-replica.js && exit 0
+          sleep 2
+        done
+        exit 1
+    depends_on:
+      product-db: { condition: service_healthy }
+    networks: [backend]
+    restart: "no"
+
+  shipment-db:
+    image: mongo:8.0@sha256:8e7d23aa641b0ec6c86418866d5d18d74d5abf89061bc5db7bc4b80929021ef6
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: shipment
+      MONGO_INITDB_ROOT_PASSWORD: ${SHIPMENT_DB_PASSWORD:?Run scripts/Initialize.ps1}
+    volumes: [shipment-data:/data/db]
+    networks: [backend]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --username shipment --password \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval 'quit(db.adminCommand({ping:1}).ok ? 0 : 1)' >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  redis:
+    image: redis:7.4-alpine@sha256:6ba19c50b56777f5c11c58eff8ddb69d0d5f27ba131cffb63f180ccfd43c66af
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Run scripts/Initialize.ps1}
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    volumes: [redis-data:/data]
+    networks: [backend]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  kafka:
+    image: apache/kafka:3.9.1@sha256:4ceccc577f03f51f6af8dbfda55194d0d892f4fa7913ffbded567ce3895622ed
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+    volumes: [kafka-data:/var/lib/kafka/data]
+    networks: [backend]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+  kafka-init:
+    image: apache/kafka:3.9.1@sha256:4ceccc577f03f51f6af8dbfda55194d0d892f4fa7913ffbded567ce3895622ed
+    entrypoint: ["/opt/kafka/bin/kafka-topics.sh"]
+    command: ["--bootstrap-server", "kafka:9092", "--create", "--if-not-exists", "--topic", "order-created", "--partitions", "1", "--replication-factor", "1"]
+    depends_on:
+      kafka: { condition: service_healthy }
+    networks: [backend]
+    restart: "no"
+
+  customer-service:
+    <<: *app
+    environment:
+      SERVICE: customer-service
+      INTERNAL_KEY: ${INTERNAL_KEY}
+      DATABASE_URL: postgres://customer:${CUSTOMER_DB_PASSWORD}@customer-db:5432/customer
+    depends_on:
+      customer-db: { condition: service_healthy }
+
+  auth-service:
+    <<: *app
+    environment:
+      SERVICE: auth-service
+      INTERNAL_KEY: ${INTERNAL_KEY}
+      DATABASE_URL: postgres://auth:${AUTH_DB_PASSWORD}@auth-db:5432/auth
+      CUSTOMER_GRPC: customer-service:50051
+      JWT_SECRET: ${JWT_SECRET:?Run scripts/Initialize.ps1}
+      JWT_TTL_SECONDS: ${JWT_TTL_SECONDS:-3600}
+    depends_on:
+      auth-db: { condition: service_healthy }
+      customer-service: { condition: service_healthy }
+
+  product-service:
+    <<: *app
+    environment:
+      SERVICE: product-service
+      INTERNAL_KEY: ${INTERNAL_KEY}
+      MONGO_URL: mongodb://product:${PRODUCT_DB_PASSWORD}@product-db:27017/product?authSource=admin&replicaSet=rs0
+      MONGO_DATABASE: product
+    depends_on:
+      product-db-init: { condition: service_completed_successfully }
+
+  order-service:
+    <<: *app
+    environment:
+      SERVICE: order-service
+      INTERNAL_KEY: ${INTERNAL_KEY}
+      DATABASE_URL: postgres://orders:${ORDER_DB_PASSWORD}@order-db:5432/orders
+      CUSTOMER_GRPC: customer-service:50051
+      PRODUCT_GRPC: product-service:50051
+      SHIPMENT_GRPC: shipment-service:50051
+      KAFKA_BROKERS: kafka:9092
+      DISCOUNT_POLICY: ${DISCOUNT_POLICY}
+    depends_on:
+      order-db: { condition: service_healthy }
+      customer-service: { condition: service_healthy }
+      product-service: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
+
+  shipment-service:
+    <<: *app
+    environment:
+      SERVICE: shipment-service
+      INTERNAL_KEY: ${INTERNAL_KEY}
+      MONGO_URL: mongodb://shipment:${SHIPMENT_DB_PASSWORD}@shipment-db:27017/shipment?authSource=admin
+      MONGO_DATABASE: shipment
+      KAFKA_BROKERS: kafka:9092
+    depends_on:
+      shipment-db: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
+
+  api-gateway:
+    <<: *app
+    ports: ["127.0.0.1:${API_PORT:-3001}:3000"]
+    environment:
+      SERVICE: api-gateway
+      INTERNAL_KEY: ${INTERNAL_KEY}
+      AUTH_GRPC: auth-service:50051
+      CUSTOMER_GRPC: customer-service:50051
+      PRODUCT_GRPC: product-service:50051
+      ORDER_GRPC: order-service:50051
+      SHIPMENT_GRPC: shipment-service:50051
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-120}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+      DISCOUNT_POLICY: ${DISCOUNT_POLICY}
+    depends_on:
+      auth-service: { condition: service_healthy }
+      customer-service: { condition: service_healthy }
+      product-service: { condition: service_healthy }
+      order-service: { condition: service_healthy }
+      shipment-service: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  test-runner:
+    image: ecommerce-microservices:local
+    profiles: [tools]
+    init: true
+    command: ["node", "tests/integration.js"]
+    volumes:
+      - ./tests:/app/tests:ro
+      - ./scripts:/app/scripts:ro
+      - ./artifacts:/app/artifacts
+    environment:
+      API_BASE_URL: http://api-gateway:3000
+      INTERNAL_KEY: ${INTERNAL_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      AUTH_DATABASE_URL: postgres://auth:${AUTH_DB_PASSWORD}@auth-db:5432/auth
+      CUSTOMER_DATABASE_URL: postgres://customer:${CUSTOMER_DB_PASSWORD}@customer-db:5432/customer
+      ORDER_DATABASE_URL: postgres://orders:${ORDER_DB_PASSWORD}@order-db:5432/orders
+      PRODUCT_MONGO_URL: mongodb://product:${PRODUCT_DB_PASSWORD}@product-db:27017/product?authSource=admin&replicaSet=rs0
+      SHIPMENT_MONGO_URL: mongodb://shipment:${SHIPMENT_DB_PASSWORD}@shipment-db:27017/shipment?authSource=admin
+      AUTH_GRPC: auth-service:50051
+      CUSTOMER_GRPC: customer-service:50051
+      PRODUCT_GRPC: product-service:50051
+      ORDER_GRPC: order-service:50051
+      SHIPMENT_GRPC: shipment-service:50051
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      KAFKA_BROKERS: kafka:9092
+      DISCOUNT_POLICY: ${DISCOUNT_POLICY}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-120}
+      REPORT_PATH: /app/artifacts/integration-last.json
+    networks: [backend]
+
+networks:
+  backend: {}
+volumes:
+  auth-data: {}
+  customer-data: {}
+  order-data: {}
+  product-data: {}
+  shipment-data: {}
+  redis-data: {}
+  kafka-data: {}

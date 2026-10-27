@@ -1,0 +1,14 @@
+syntax = "proto3";
+package ecommerce.customer;
+import "common.proto";
+service CustomerService {
+  rpc GetCustomer(ecommerce.common.IdRequest) returns (Customer);
+  rpc UpdateCustomer(UpdateCustomerRequest) returns (Customer);
+  rpc GetMembership(ecommerce.common.IdRequest) returns (Membership);
+  rpc EnsureCustomer(EnsureCustomerRequest) returns (Customer);
+  rpc Health(ecommerce.common.Empty) returns (ecommerce.common.HealthResponse);
+}
+message Customer { int32 uid = 1; string fullname = 2; int32 mid = 3; }
+message Membership { int32 mid = 1; string mname = 2; int32 score = 3; }
+message UpdateCustomerRequest { int32 uid = 1; optional string fullname = 2; optional int32 mid = 3; }
+message EnsureCustomerRequest { int32 uid = 1; string fullname = 2; }

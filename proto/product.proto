@@ -1,0 +1,24 @@
+syntax = "proto3";
+package ecommerce.product;
+import "common.proto";
+service ProductService {
+  rpc ListProducts(ecommerce.common.Empty) returns (ProductList);
+  rpc GetProduct(ProductId) returns (Product);
+  rpc CreateProduct(ProductInput) returns (Product);
+  rpc UpdateProduct(UpdateProductRequest) returns (Product);
+  rpc DeleteProduct(ProductId) returns (Product);
+  rpc ApplyInventory(InventoryRequest) returns (InventoryOperation);
+  rpc GetInventoryOperation(OperationId) returns (InventoryOperation);
+  rpc CancelInventory(OperationId) returns (InventoryOperation);
+  rpc Health(ecommerce.common.Empty) returns (ecommerce.common.HealthResponse);
+}
+message ProductId { int32 pid = 1; }
+message Product { int32 pid = 1; string pname = 2; string price = 3; int32 quantity = 4; }
+message ProductList { repeated Product items = 1; }
+message ProductInput { string pname = 1; string price = 2; int32 quantity = 3; }
+message UpdateProductRequest { int32 pid = 1; optional string pname = 2; optional string price = 3; optional int32 quantity = 4; }
+message OrderItem { int32 pid = 1; int32 qty = 2; }
+message InventoryItem { int32 pid = 1; int32 qty = 2; string unit_price = 3; }
+message InventoryRequest { string operationId = 1; repeated OrderItem items = 2; }
+message OperationId { string operationId = 1; }
+message InventoryOperation { string operationId = 1; string state = 2; repeated InventoryItem items = 3; }
